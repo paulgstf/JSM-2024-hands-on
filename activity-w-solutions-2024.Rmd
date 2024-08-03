@@ -1,0 +1,407 @@
+---
+title: "Misclassification Activity for JSM 2024 Short Course"
+author: "set below"
+date: "set below"
+output: 
+  beamer_presentation:
+    theme: "Boadilla"
+    colortheme: "orchid"
+header-includes:
+  - \AtBeginDocument{\title[]{Misclassification Activity\\JSM 2024 Short Course\\(with solutions)}}
+  - \AtBeginDocument{\author[]{Paul Gustafson}}
+  - \AtBeginDocument{\date[]{August 3, 2024}}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=F}
+### global reproducibility
+set.seed(1234)
+### sane output
+options(digits=3)
+options(width=65)
+```
+
+## Recall this example 
+
+```{r}
+data.tbl <- matrix(c(45,94,257,945),
+  dimnames = list(c("CHD+", "CHD-"),c("Resin+", "Resin-")),
+  nrow = 2, byrow = TRUE)
+```
+
+```{r}
+data.tbl
+```
+## Naive analysis presuming correct exposure classification
+
+Inference for exposure-disease odds-ratio
+
+```{r}
+logOR.hat <- sum(c(1,-1,-1,1)*log(as.vector(data.tbl)))
+
+logOR.SE <- sqrt(sum(1/as.vector(data.tbl)))
+
+exp(logOR.hat + c(0, -1.96, 1.96)*logOR.SE)
+```
+
+## Assuming nondifferential exposure misclassification with 90% sensitivity and 80% specificity
+
+Again, recall from slides:
+
+```{r, message=F, warning=F}
+require(episensr)
+
+ft <- misclassification(data.tbl,
+ type="exposure", bias_parms=c(0.9, 0.9, 0.8, 0.8))
+
+# point and interval estimation of OR
+ft$adj.measures[2,]
+```
+
+
+## Activity A 
+
+Check you can reproduce one of the **differential** classification adjustments given in the slides (i.e., one of the off-diagonal table entries on slide 151).
+
+For instance, try presuming 90% specificity for all subjects, but sensitivity of 90% for controls, compared to 80% for cases.
+
+Might help:
+
+```{r,eval=F}
+help(misclassification)
+```
+
+## Activity A: Solution
+
+```{r}
+ft <- misclassification(data.tbl,
+ type="exposure", bias_parms=c(0.8, 0.9, 0.9, 0.9))
+
+# point and interval estimation of OR
+ft$adj.measures[2,]
+```
+
+
+## Activity B: Uncertainty about misclassification rates 
+
+Say the investigator is confident that the misclassification is nondifferential.    
+
+Has 85% sensitivity and 85% specificity as "best guesses."  
+
+But thinks either guess could be off by as much as five percentage points.
+
+Can you look at
+```{r, eval=F}
+help(probsens)
+```
+and then provide an appropriate analysis?
+
+HINT: First example in the help gives a template.
+
+HINT: For simplicity, maybe "triangular" or "uniform" instead of "trapezoidal"
+
+
+## Activity B - Solution
+ 
+```{r}
+ft <- probsens(data.tbl,
+ type="exposure", reps=5000, 
+ seca.parms = list("triangular", c(0.80, 0.90, 0.85)),
+ spca.parms = list("triangular", c(0.80, 0.90, 0.85)))       
+
+# OR inference
+rownames(ft$adj)
+
+ft$adj.measures[4,]
+```
+
+
+## Activity C - Role of data
+
+We have useful heuristics in statistics, such as the primal role of $\sqrt{n}$.    
+
+If I want interval estimates *twice* as narrow, I likely need about *four times* as much data.
+
+Repeat Activity B, but with four times as much data.   (Simplest to just keep cell *proportions* fixed in the 2 by 2 data table).
+
+Reflect on what you find.
+
+## Activity C - Solution
+
+```{r}
+ft.more <- probsens(4*data.tbl,
+ type="exposure", reps=5000, 
+ seca.parms = list("triangular", c(0.80, 0.90, 0.85)),
+ spca.parms = list("triangular", c(0.80, 0.90, 0.85)))       
+
+# OR inference
+ft.more$adj.measures[4,]
+```
+
+## Activity C - Solution, continued
+
+Reduction in interval width:
+
+```{r}
+# ratio of CI on log-OR
+(log(ft.more$adj[4,3])- log(ft.more$adj[4,2])) /
+(log(ft$adj[4,3])     - log(ft$adj[4,2]))
+```
+
+Not the usual payoff for quadrupling sample size!
+ 
+Majority contributor to uncertainty: imprecise knowledge of the exposure classification characteristics (sens and spec).
+ 
+
+## Activity D - Bayesian approach
+
+Factor the joint dist. of $(X,X^*,Y)$ in terms of $(Y)$, $(X|Y)$, $(X^*|X,Y)$.
+
+Leave $(Y)$ as unmodeled [since $Y$ observed, and given case-control design, parameter of most interest is determined by $X|Y$)].
+
+Parameterize as $Pr(X=1|Y=y)=r_y$, and
+\begin{align*}
+Pr(X^*=X|X=x, Y=y)   &=
+\left\{
+\begin{array}{cc}
+Sp & \mbox{if\; } x=0, \\
+Sn & \mbox{if\; } x=1. \\
+\end{array}
+\right.
+\end{align*}
+
+Parameter of most interest: $\psi = \log OR(X,Y) = \mbox{logit}(r_1) - \mbox{logit}(r_0)$.
+
+Priors $r_{j} \sim \mbox{Unif}(0,1)$, $Sn \sim \mbox{beta}(a_{sn},b_{sn})$,$Sp \sim \mbox{beta}(a_{sp},b_{sp})$.
+
+
+## Activity D, continued
+
+A bit too much overhead with trying to get JAGS/rJAGS going in a matter of minutes (unless you have experience...)
+
+Here (meaning sitting in the .Rmd file generating these slides) is a bespoke R function (called **bespoke()**)
+to do MCMC for this model/prior only:
+
+
+```{r, echo=F, message=F}
+require("rje")
+```
+
+
+```{r, echo=F}
+bespoke <- function(n.0, n.1, mstr.0, mstr.1, a.sn, b.sn, a.sp, b.sp, 
+                    N.REP=50000, N.BURN=100) {
+
+  ### INPUTS
+  ### n.j is size of control (j=0) and case (j=1) samples
+  ### mstr.j is number (out of n.j) of apparently exposed
+  ### a.sn, b.sn, a.sp, b.sp are hyperparameters
+  
+  ### LATENTS
+  ### m.j is number (out of n.j) actually exposed
+  ### t.j is number (out of mstr.j) actually exposed amongst the apparents
+
+  ### OUTPUT output will be matrix, MC sample from posterior 
+  ans <- matrix(NA, N.REP, 8)
+  colnames(ans) <- c("r0","r1","sn","sp","m0","m1","t0","t1")
+  
+  ### arbitrary initialization of latent data
+  t.0 <- round(mstr.0/3); m.0 <- round(1.2*t.0)
+  t.1 <- round(mstr.1/3); m.1 <- round(1.2*t.0)
+
+  ### output will be matrix, MC sample from posterior, parameters 
+  ans <- matrix(NA, N.REP, 8)
+  colnames(ans) <- c("r0","r1","sn","sp","m0","m1","t0","t1")
+  
+  for (i in (-N.BURN):N.REP) {
+
+    ### update parameters given latent data
+    r.0 <- rbeta(1, 1+m.0, 1+n.0-m.0)
+    r.1 <- rbeta(1, 1+m.1, 1+n.1-m.1)
+    
+    sn <- rbeta(1, a.sn + t.0 + t.1, b.sn + (m.0-t.0) + (m.1-t.1))
+    sp <- rbeta(1, a.sp + (n.0-mstr.0)-(m.0-t.0) + (n.1-mstr.1)-(m.1-t.1),
+               b.sp + (mstr.0-t.0) + (mstr.1-t.1))
+
+    ### update latent data given parameters
+
+    ### control group
+    ### true positives amongst apparent positives
+    t.0 <- rbinom(1, size=mstr.0,     prob=r.0*sn/(r.0*sn + (1-r.0)*(1-sp))) 
+    ### add in true positives amongst apparent negatives               
+    m.0 <- t.0 + rbinom(1, size=n.0-mstr.0, prob=r.0*(1-sn)/(r.0*(1-sn) + (1-r.0)*sp))  
+
+    ### case group
+    ### true positives amongst apparent positives
+    t.1 <- rbinom(1, size=mstr.1,     prob=r.1*sn/(r.1*sn + (1-r.1)*(1-sp))) 
+    ### add in true positives amongst apparent negatives               
+    m.1 <- t.1 + rbinom(1, size=n.1-mstr.1, prob=r.1*(1-sn)/(r.1*(1-sn) + (1-r.1)*sp))  
+
+    if (i>0) {
+      ans[i,] <- c(r.0, r.1, sn, sp, m.0, m.1, t.0, t.1)
+    }
+  }
+  ans    
+}
+```
+
+## **bespoke()**
+
+```{r, eval=F}
+bespoke <- function(n.0, n.1, mstr.0, mstr.1, 
+                    a.sn, b.sn, a.sp, b.sp, 
+                    N.REP=50000, N.BURN=100) {
+
+  ### INPUTS
+  ### n.j is size of control (j=0) and case (j=1) samples
+  ### mstr.j is number (out of n.j) of apparently exposed
+  ### a.sn, b.sn, a.sp, b.sp are hyperparameters
+  
+  ### LATENTS
+  ### m.j is number (out of n.j) actually exposed
+  ### t.j is number (out of mstr.j) actually exposed 
+  ###     amongst the apparents
+
+  ### OUTPUT output will be matrix, MC sample from posterior 
+  ans <- matrix(NA, N.REP, 8)
+  colnames(ans) <- c("r0","r1","sn","sp","m0","m1","t0","t1")
+  ...
+```
+
+
+## Example
+
+Say I am pretty sure that the exposure classification is very good (though probably not perfect).   I encode this with 
+priors $Sn \sim \mbox{Beta}(140,10)$, $Sp \sim \mbox{Beta}(140,10)$.
+
+*Sidenote:*    As a thought experiment, this would formally be the evidence had we done an external
+validation of 150 truly unexposed and 150 truly exposed individuals, and found 10 misclassifications in each group.
+
+
+```{r}
+mc.opt <- bespoke(n.0=257+945, n.1=45+94, 
+                  mstr.0=257, mstr.1=45, 
+                  a.sn=140, b.sn=10, a.sp=140, b.sp=10)
+```
+
+## Example, continued
+
+```{r}
+### focus on target parameter
+mc.trg <- logit(mc.opt[,"r1"]) - logit(mc.opt[,"r0"])
+summary(mc.trg)
+
+### estimate OR 
+exp(mean(mc.trg))
+
+### corresponding 95% credible interval
+exp(quantile(mc.trg, c(0.025, 0.975)))
+```
+
+## Activity D - you try
+
+Can you carry out a Bayesian analysis with *about* the same sort of uncertainty about misclassification parameters as
+in Activity B.
+
+
+## Activity D: Possible solution
+
+
+There would be more formal approaches, but trial-and-error reveals that a 
+$\mbox{beta}(150 \times 0.85=128, 150 \times 0.15 =23)$ distribution is centered at
+$0.85$ and puts most of its mass on $0.85 \pm 0.05$
+
+```{r, fig.height=3.0}
+hist(rbeta(1000,128,23))
+```
+
+```{r}
+pbeta(c(0.80,0.85,0.90), 128, 23)
+```
+
+## Possible solution, continued
+
+```{r}
+mc.opt2 <- bespoke(n.0=257+945, n.1=45+94, 
+                  mstr.0=257, mstr.1=45, 
+                  a.sn=128, b.sn=23, a.sp=128, b.sp=23)
+```
+
+## Possible solution, continued
+
+```{r}
+### focus on target parameter
+mc2.trg <- logit(mc.opt2[,"r1"]) - logit(mc.opt2[,"r0"])
+summary(mc2.trg)
+
+### estimate OR 
+exp(mean(mc2.trg))
+
+### corresponding 95% credible interval
+exp(quantile(mc2.trg, c(0.025, 0.975)))
+```
+## Activity D - further thinking/doing points
+
+Depending on your background and interests, you could:
+
+*  Look at the code for **bespoke()** to confirm how the MCMC algorithm (in this case the Gibbs sampler) bounces back and forth between sampling complete data given parameters, and sampling parameters given complete data.
+
+*  Take a closer look at the Monte Carlo output to confirm that you do not get the luxury of *iid* draws from the posterior distribution, but rather have to live with serially autocorrelated draws.
+
+*  Take a closer look at the Monte Carlo output to consider what the posterior distribution of $Sn$ and $Sp$ looks like, compared to the prior.
+
+## Traceplot (for $\psi = \mbox{logit}(r_1)-\mbox{logit}(r_0)$)
+
+```{r, fig.height=3.0}
+par(mfrow=c(1,2))
+### first 500 realizations
+plot(1:500, mc.trg[1:500], type="l",
+     xlab="iteration", ylab="log-OR")
+### all 50000 realizations
+plot(1:length(mc.trg), mc.trg, type="l",
+     xlab="iteration", ylab="log-OR")
+```
+
+## Prior-to-posterior comparison for $Sn$, $Sp$
+
+```{r, fig.height=3.0}
+par(mfrow=c(1,2))
+tmp <- seq(from=0.8, to=1, length=500)
+hist(mc.opt[,"sn"], xlim=c(0.8,1), ylim=c(0,25), prob=T,
+     xlab="Sn",main="")
+points(tmp, dbeta(tmp, 140, 10), type="l")
+hist(mc.opt[,"sp"], xlim=c(0.8,1), ylim=c(0,25), prob=T, 
+     xlab="Sp",main="")
+points(tmp, dbeta(tmp, 140, 10), type="l")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
